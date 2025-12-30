@@ -54,7 +54,7 @@ fn create_simple_stream() -> Result<Simple, AecError> {
 
     Simple::new(
         None,
-        "native-voice-io",
+        "sys-voice",
         Direction::Record,
         None,
         "AEC Capture",
@@ -62,9 +62,5 @@ fn create_simple_stream() -> Result<Simple, AecError> {
         None,
         None,
     )
-    .map_err(|e| match e {
-        libpulse_binding::error::Code::ConnectionRefused => AecError::DeviceUnavailable,
-        libpulse_binding::error::Code::Access => AecError::PermissionDenied,
-        _ => AecError::BackendError(format!("PulseAudio error: {e:?}")),
-    })
+    .map_err(|e| AecError::BackendError(format!("PulseAudio error: {e:?}")))
 }
