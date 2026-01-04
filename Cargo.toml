@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Cross-platform native voice I/O with OS-level Acoustic Echo Cancellation"
 license = "MIT"
+repository = "https://github.com/tigy32/sys-voice"
+readme = "README.md"
+keywords = ["audio", "voice", "aec", "echo-cancellation", "cross-platform"]
+categories = ["multimedia::audio"]
 
 [dependencies]
 thiserror = "2"

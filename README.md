@@ -4,8 +4,7 @@ Cross-platform native voice I/O with OS-level Acoustic Echo Cancellation (AEC).
 
 ## Current Status
 
-This is slop by claude and has only been tested on osx and ios (and even those likely have bugs). Do not use this 
-unless you are willing to test and help fix bugs.
+Each platform has been roughly tested but this library is likely to have bugs. Contributions welcome.
 
 ## Platform Support
 
