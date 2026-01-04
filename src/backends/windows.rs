@@ -1,8 +1,7 @@
 use crate::AecError;
 
 use wasapi::{
-    get_default_device, initialize_mta, AcousticEchoCancellationControl, Direction, SampleType,
-    ShareMode, WaveFormat,
+    initialize_mta, DeviceEnumerator, Direction, SampleType, ShareMode, StreamMode, WaveFormat,
 };
 
 /// Create WASAPI capture backend with AEC.
@@ -10,11 +9,20 @@ use wasapi::{
 /// Returns (sample_rate, buffer_size) queried from the actual device format.
 pub fn create_backend(sender: flume::Sender<Vec<f32>>) -> Result<(u32, usize), AecError> {
     // COM must be initialized for WASAPI
-    initialize_mta().map_err(|e| AecError::BackendError(format!("COM init failed: {e:?}")))?;
+    let hr = initialize_mta();
+    if hr.0 != 0 {
+        return Err(AecError::BackendError(format!("COM init failed: {hr:?}")));
+    }
 
     // Verify devices are available before spawning task
-    get_default_device(&Direction::Capture).map_err(|_| AecError::DeviceUnavailable)?;
-    get_default_device(&Direction::Render).map_err(|_| AecError::DeviceUnavailable)?;
+    let enumerator = DeviceEnumerator::new()
+        .map_err(|e| AecError::BackendError(format!("DeviceEnumerator::new: {e:?}")))?;
+    enumerator
+        .get_default_device(&Direction::Capture)
+        .map_err(|_| AecError::DeviceUnavailable)?;
+    enumerator
+        .get_default_device(&Direction::Render)
+        .map_err(|_| AecError::DeviceUnavailable)?;
 
     let (meta_tx, meta_rx) = flume::bounded::<Result<(u32, usize), AecError>>(1);
 
@@ -35,12 +43,19 @@ fn capture_loop(
     meta_tx: flume::Sender<Result<(u32, usize), AecError>>,
 ) -> Result<(), AecError> {
     // Re-initialize COM on this thread
-    initialize_mta().map_err(|e| AecError::BackendError(format!("COM init failed: {e:?}")))?;
+    let hr = initialize_mta();
+    if hr.0 != 0 {
+        return Err(AecError::BackendError(format!("COM init failed: {hr:?}")));
+    }
 
-    let capture_device =
-        get_default_device(&Direction::Capture).map_err(|_| AecError::DeviceUnavailable)?;
-    let render_device =
-        get_default_device(&Direction::Render).map_err(|_| AecError::DeviceUnavailable)?;
+    let enumerator = DeviceEnumerator::new()
+        .map_err(|e| AecError::BackendError(format!("DeviceEnumerator::new: {e:?}")))?;
+    let capture_device = enumerator
+        .get_default_device(&Direction::Capture)
+        .map_err(|_| AecError::DeviceUnavailable)?;
+    let render_device = enumerator
+        .get_default_device(&Direction::Render)
+        .map_err(|_| AecError::DeviceUnavailable)?;
 
     let desired_format = WaveFormat::new(32, 32, &SampleType::Float, 48000, 1, None);
 
@@ -56,19 +71,17 @@ fn capture_loop(
             .map_err(|e| AecError::BackendError(format!("get_mixformat: {e:?}")))?,
     };
 
+    let stream_mode = StreamMode::EventsShared {
+        autoconvert: true,
+        buffer_duration_hns: 200_000,
+    };
     audio_client
-        .initialize_client(
-            &capture_format,
-            0, // buffer duration (0 = default)
-            &Direction::Capture,
-            &ShareMode::Shared,
-            true, // use event callback
-        )
+        .initialize_client(&capture_format, &Direction::Capture, &stream_mode)
         .map_err(|e| AecError::BackendError(format!("initialize_client: {e:?}")))?;
 
-    if let Ok(aec_control) = AcousticEchoCancellationControl::get_control(&audio_client) {
+    if let Ok(aec_control) = audio_client.get_aec_control() {
         if let Ok(render_id) = render_device.get_id() {
-            let _ = aec_control.set_echo_cancellation_render_endpoint(&render_id);
+            let _ = aec_control.set_echo_cancellation_render_endpoint(Some(render_id));
         }
     }
 
@@ -81,30 +94,39 @@ fn capture_loop(
         .map_err(|e| AecError::BackendError(format!("set_get_eventhandle: {e:?}")))?;
 
     audio_client
-        .start()
-        .map_err(|e| AecError::BackendError(format!("start: {e:?}")))?;
+        .start_stream()
+        .map_err(|e| AecError::BackendError(format!("start_stream: {e:?}")))?;
 
     let block_align = capture_format.get_blockalign() as usize;
     let native_channels = capture_format.get_nchannels() as usize;
     let bits = capture_format.get_bitspersample();
-    let is_float = capture_format.get_subformat() == Some(SampleType::Float);
+    let is_float = matches!(capture_format.get_subformat(), Ok(SampleType::Float));
     let native_sample_rate = capture_format.get_samplespersec();
-    let buffer_frames = (native_sample_rate / 100) as usize; // 10ms worth of frames
 
-    let _ = meta_tx.send(Ok((native_sample_rate, buffer_frames)));
+    let device_buffer_frames = audio_client
+        .get_buffer_size()
+        .map_err(|e| AecError::BackendError(format!("get_buffer_size: {e:?}")))?;
+
+    let _ = meta_tx.send(Ok((native_sample_rate, device_buffer_frames as usize)));
+
+    let buffer_size = (device_buffer_frames as usize) * block_align;
+    let mut buffer = vec![0u8; buffer_size];
 
     loop {
-        event_handle
-            .wait(100)
-            .map_err(|e| AecError::BackendError(format!("event wait failed: {e:?}")))?;
+        // Wait for event with timeout. Timeout is normal - continue waiting for data.
+        let _ = event_handle.wait_for_event(100);
 
-        let (data, _frames) = capture_client
-            .read_from_device_to_deveice_buffer()
-            .map_err(|e| AecError::BackendError(format!("capture read failed: {e:?}")))?;
+        let (frames_read, _buffer_info) = match capture_client.read_from_device(&mut buffer) {
+            Ok(result) => result,
+            Err(_) => continue, // No data available yet
+        };
 
-        if data.is_empty() {
+        if frames_read == 0 {
             continue;
         }
+
+        let data_bytes = (frames_read as usize) * block_align;
+        let data = &buffer[..data_bytes];
 
         if block_align == 0 || data.len() % block_align != 0 {
             return Err(AecError::BackendError(format!(
@@ -125,8 +147,8 @@ fn capture_loop(
     }
 
     audio_client
-        .stop()
-        .map_err(|e| AecError::BackendError(format!("stop: {e:?}")))?;
+        .stop_stream()
+        .map_err(|e| AecError::BackendError(format!("stop_stream: {e:?}")))?;
 
     Ok(())
 }
