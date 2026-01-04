@@ -1,6 +1,7 @@
 use oboe::{
-    AudioInputCallback, AudioInputStreamSafe, AudioStreamBuilder, DataCallbackResult, Input,
-    InputPreset, Mono, PerformanceMode, SampleRateConversionQuality, SharingMode, Usage,
+    AudioInputCallback, AudioInputStreamSafe, AudioStream, AudioStreamBase, AudioStreamBuilder,
+    AudioStreamSafe, DataCallbackResult, Input, InputPreset, Mono, PerformanceMode,
+    SampleRateConversionQuality, SharingMode, Usage,
 };
 
 use crate::AecError;
@@ -36,7 +37,7 @@ pub fn create_backend(public_sender: flume::Sender<Vec<f32>>) -> Result<(u32, us
                 sender: callback_tx,
             };
 
-            let stream = match AudioStreamBuilder::default()
+            let mut stream = match AudioStreamBuilder::default()
                 .set_direction::<Input>()
                 .set_usage(Usage::VoiceCommunication)
                 .set_input_preset(InputPreset::VoiceCommunication)
@@ -44,8 +45,9 @@ pub fn create_backend(public_sender: flume::Sender<Vec<f32>>) -> Result<(u32, us
                 .set_sharing_mode(SharingMode::Exclusive)
                 .set_sample_rate(48000)
                 .set_sample_rate_conversion_quality(SampleRateConversionQuality::Medium)
+                .set_format::<f32>()
                 .set_mono()
-                .set_input_callback(handler)
+                .set_callback(handler)
                 .open_stream()
             {
                 Ok(s) => s,
