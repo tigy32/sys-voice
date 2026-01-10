@@ -1,0 +1,92 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+*.swo
+*~
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+*.moved-aside
+
+# IntelliJ/Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code
+.vscode/
+
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+# NOTE: pubspec.lock is NOT ignored - crucial for reproducible builds
+
+# Rust
+rust/target/
+rust/Cargo.lock
+
+# Cargokit build artifacts (the tool itself is vendored, but not its build outputs)
+rust_builder/cargokit/build_tool/.dart_tool/
+rust_builder/cargokit/build_tool/pubspec.lock
+
+# Generated flutter_rust_bridge code
+lib/src/rust/
+
+# Platform builds - web not supported
+web/
+
+# iOS
+**/ios/.generated/
+**/ios/.tags/
+**/ios/Pods/
+**/ios/Podfile.lock
+**/ios/.symlinks/
+**/ios/Flutter/Flutter.framework/
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/app.flx
+**/ios/Flutter/flutter_assets/
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/ios/DerivedData/
+
+# Android
+**/android/.gradle/
+**/android/build/
+**/android/app/build/
+**/android/captures/
+**/android/local.properties
+**/android/key.properties
+**/android/*.iml
+**/android/generated/
+
+# macOS
+macos/Pods/
+macos/Podfile.lock
+macos/.symlinks/
+macos/Flutter/ephemeral/
+macos/Flutter/GeneratedPluginRegistrant.swift
+
+# Windows
+windows/flutter/ephemeral/
+windows/flutter/generated_*
+
+# Linux
+linux/flutter/ephemeral/
+linux/flutter/generated_*
+
+# Xcode user-specific
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcworkspacedata

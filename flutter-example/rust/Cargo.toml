@@ -1,0 +1,15 @@
+[package]
+name = "rust_lib_voice_capture_example"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+sys-voice = { path = "../.." }
+flutter_rust_bridge = "=2.11.1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+
+[features]
+default = []
