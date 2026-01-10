@@ -194,7 +194,6 @@ fn playback_loop(playback_rx: flume::Receiver<PlaybackRequest>) -> Result<(), Ae
 
     let native_rate = render_format.get_samplespersec();
     let native_channels = render_format.get_nchannels() as usize;
-    let block_align = render_format.get_blockalign() as usize;
 
     let stream_mode = StreamMode::EventsShared {
         autoconvert: true,
@@ -244,7 +243,7 @@ fn playback_loop(playback_rx: flume::Receiver<PlaybackRequest>) -> Result<(), Ae
             }
 
             if render_client
-                .write_to_device(frames as u32, block_align as u32, &bytes, None)
+                .write_to_device(frames, &bytes, None)
                 .is_err()
             {
                 break;
