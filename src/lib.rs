@@ -51,6 +51,7 @@ pub enum AecError {
 /// Capture stops automatically when dropped (channel disconnect stops backend).
 pub struct CaptureHandle {
     receiver: flume::Receiver<Result<Vec<f32>, AecError>>,
+    backend: backends::BackendHandle,
     sample_rate: u32,
 }
 
@@ -65,7 +66,7 @@ impl CaptureHandle {
         }
 
         let (backend_tx, backend_rx) = flume::bounded::<Vec<f32>>(32);
-        let (native_rate, _buffer_size) = backends::create_backend(backend_tx)?;
+        let (native_rate, _buffer_size, backend_handle) = backends::create_backend(backend_tx)?;
 
         let (public_tx, public_rx) = flume::bounded::<Result<Vec<f32>, AecError>>(32);
         let target_rate = config.sample_rate;
@@ -102,6 +103,7 @@ impl CaptureHandle {
 
         Ok(Self {
             receiver: public_rx,
+            backend: backend_handle,
             sample_rate: target_rate,
         })
     }
@@ -128,6 +130,13 @@ impl CaptureHandle {
     /// May differ from requested rate if resampling is active.
     pub fn native_sample_rate(&self) -> u32 {
         self.sample_rate
+    }
+
+    /// Play audio through the same engine used for capture.
+    /// This enables AEC to cancel the played audio from the recording.
+    /// Audio is played at the specified sample rate.
+    pub fn play_audio(&self, samples: Vec<f32>, sample_rate: u32) -> Result<(), AecError> {
+        self.backend.play_audio(samples, sample_rate)
     }
 }
 

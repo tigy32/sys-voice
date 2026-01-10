@@ -14,9 +14,11 @@ thiserror = "2"
 rubato = "0.16"
 flume = "0.11"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
+tracing = "0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 coreaudio-rs = "0.12"
+coreaudio-sys = "0.2"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # iOS requires objc bridging for AVAudioEngine - manual bindings

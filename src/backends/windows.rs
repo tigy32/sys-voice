@@ -1,3 +1,5 @@
+use crate::backends::PlaybackRequest;
+use crate::resampler::Resampler;
 use crate::AecError;
 
 use wasapi::{
@@ -7,7 +9,10 @@ use wasapi::{
 /// Create WASAPI capture backend with AEC.
 /// Spawns a blocking task that owns all WASAPI resources.
 /// Returns (sample_rate, buffer_size) queried from the actual device format.
-pub fn create_backend(sender: flume::Sender<Vec<f32>>) -> Result<(u32, usize), AecError> {
+pub fn create_backend(
+    sender: flume::Sender<Vec<f32>>,
+    playback_rx: flume::Receiver<PlaybackRequest>,
+) -> Result<(u32, usize), AecError> {
     // COM must be initialized for WASAPI
     let hr = initialize_mta();
     if hr.0 != 0 {
@@ -29,6 +34,13 @@ pub fn create_backend(sender: flume::Sender<Vec<f32>>) -> Result<(u32, usize), A
     tokio::task::spawn_blocking(move || {
         if let Err(e) = capture_loop(sender, meta_tx.clone()) {
             let _ = meta_tx.send(Err(e));
+        }
+    });
+
+    // Spawn playback task to handle outgoing audio
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = playback_loop(playback_rx) {
+            tracing::error!("Playback loop error: {e:?}");
         }
     });
 
@@ -143,6 +155,100 @@ fn capture_loop(
 
         if sender.send(samples).is_err() {
             break;
+        }
+    }
+
+    audio_client
+        .stop_stream()
+        .map_err(|e| AecError::BackendError(format!("stop_stream: {e:?}")))?;
+
+    Ok(())
+}
+
+fn playback_loop(playback_rx: flume::Receiver<PlaybackRequest>) -> Result<(), AecError> {
+    // Re-initialize COM on this thread
+    let hr = initialize_mta();
+    if hr.0 != 0 {
+        return Err(AecError::BackendError(format!("COM init failed: {hr:?}")));
+    }
+
+    let enumerator = DeviceEnumerator::new()
+        .map_err(|e| AecError::BackendError(format!("DeviceEnumerator::new: {e:?}")))?;
+    let render_device = enumerator
+        .get_default_device(&Direction::Render)
+        .map_err(|_| AecError::DeviceUnavailable)?;
+
+    let desired_format = WaveFormat::new(32, 32, &SampleType::Float, 48000, 1, None);
+
+    let mut audio_client = render_device
+        .get_iaudioclient()
+        .map_err(|e| AecError::BackendError(format!("get_iaudioclient: {e:?}")))?;
+
+    let render_format = match audio_client.is_supported(&desired_format, &ShareMode::Shared) {
+        Ok(None) => desired_format,
+        Ok(Some(suggested)) => suggested,
+        Err(_) => audio_client
+            .get_mixformat()
+            .map_err(|e| AecError::BackendError(format!("get_mixformat: {e:?}")))?,
+    };
+
+    let native_rate = render_format.get_samplespersec();
+    let native_channels = render_format.get_nchannels() as usize;
+    let block_align = render_format.get_blockalign() as usize;
+
+    let stream_mode = StreamMode::EventsShared {
+        autoconvert: true,
+        buffer_duration_hns: 200_000,
+    };
+    audio_client
+        .initialize_client(&render_format, &Direction::Render, &stream_mode)
+        .map_err(|e| AecError::BackendError(format!("initialize_client: {e:?}")))?;
+
+    let render_client = audio_client
+        .get_audiorenderclient()
+        .map_err(|e| AecError::BackendError(format!("get_audiorenderclient: {e:?}")))?;
+
+    let event_handle = audio_client
+        .set_get_eventhandle()
+        .map_err(|e| AecError::BackendError(format!("set_get_eventhandle: {e:?}")))?;
+
+    audio_client
+        .start_stream()
+        .map_err(|e| AecError::BackendError(format!("start_stream: {e:?}")))?;
+
+    while let Ok(request) = playback_rx.recv() {
+        let samples = if request.sample_rate == native_rate {
+            request.samples
+        } else {
+            Resampler::new(request.sample_rate, native_rate)?.process(&request.samples)?
+        };
+
+        let samples = if native_channels > 1 {
+            samples
+                .iter()
+                .flat_map(|&s| std::iter::repeat(s).take(native_channels))
+                .collect()
+        } else {
+            samples
+        };
+
+        let frames_per_write = 480;
+        for chunk in samples.chunks(frames_per_write * native_channels) {
+            let _ = event_handle.wait_for_event(100);
+
+            let frames = chunk.len() / native_channels;
+
+            let mut bytes: Vec<u8> = Vec::with_capacity(chunk.len() * 4);
+            for sample in chunk {
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+
+            if render_client
+                .write_to_device(frames as u32, block_align as u32, &bytes, None)
+                .is_err()
+            {
+                break;
+            }
         }
     }
 
