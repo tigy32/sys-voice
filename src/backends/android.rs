@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use oboe::{
     AudioInputCallback, AudioInputStreamSafe, AudioOutputCallback, AudioOutputStreamSafe,
-    AudioStream, AudioStreamBase, AudioStreamBuilder, DataCallbackResult, Input, InputPreset, Mono,
-    Output, PerformanceMode, SampleRateConversionQuality, SharingMode, Usage,
+    AudioStream, AudioStreamBase, AudioStreamBuilder, AudioStreamSafe, DataCallbackResult, Input,
+    InputPreset, Mono, Output, PerformanceMode, SampleRateConversionQuality, SharingMode, Usage,
 };
 
 use crate::backends::PlaybackRequest;
