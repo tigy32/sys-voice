@@ -163,6 +163,9 @@ class AndroidEnvironment {
       '_CARGOKIT_NDK_LINK_TARGET': targetArg,
       '_CARGOKIT_NDK_LINK_CLANG': ccValue,
       'CARGOKIT_TOOL_TEMP_DIR': toolTempDir,
+      // Use shared C++ library - libc++_shared.so is deployed to jniLibs
+      // Static linking has issues with the NDK toolchain discovery
+      'CXXSTDLIB': 'c++_shared',
     };
   }
 

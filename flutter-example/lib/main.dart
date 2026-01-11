@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:ffi';
+import 'dart:io' show Platform;
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 // flutter_rust_bridge generated imports
 import 'src/rust/api/voice_capture.dart';
@@ -9,6 +12,12 @@ import 'src/rust/frb_generated.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // On Android, pre-load the C++ runtime before loading the Rust library
+  if (Platform.isAndroid) {
+    DynamicLibrary.open('libc++_shared.so');
+  }
+  
   await RustLib.init();
   runApp(const VoiceCaptureApp());
 }
@@ -78,6 +87,17 @@ class _VoiceCaptureScreenState extends State<VoiceCaptureScreen> {
       _error = null;
       _audioLevel = 0.0;
     });
+
+    // Request microphone permission on Android/iOS
+    if (Platform.isAndroid || Platform.isIOS) {
+      final status = await Permission.microphone.request();
+      if (!status.isGranted) {
+        setState(() {
+          _error = 'Microphone permission denied. Please grant permission in settings.';
+        });
+        return;
+      }
+    }
 
     try {
       final handle = await startCapture(sampleRate: _defaultSampleRate);

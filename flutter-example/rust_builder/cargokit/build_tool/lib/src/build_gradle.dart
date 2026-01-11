@@ -14,6 +14,32 @@ import 'target.dart';
 
 final log = Logger('build_gradle');
 
+String _getHostArch() {
+  if (Platform.isMacOS) {
+    return 'darwin-x86_64';
+  } else if (Platform.isLinux) {
+    return 'linux-x86_64';
+  } else if (Platform.isWindows) {
+    return 'windows-x86_64';
+  }
+  throw Exception('Unsupported host platform');
+}
+
+String _getNdkLibraryTriple(Target target) {
+  switch (target.rust) {
+    case 'aarch64-linux-android':
+      return 'aarch64-linux-android';
+    case 'armv7-linux-androideabi':
+      return 'arm-linux-androideabi';
+    case 'i686-linux-android':
+      return 'i686-linux-android';
+    case 'x86_64-linux-android':
+      return 'x86_64-linux-android';
+    default:
+      throw Exception('Unknown Android target: ${target.rust}');
+  }
+}
+
 class BuildGradle {
   BuildGradle({required this.userOptions});
 
@@ -43,6 +69,20 @@ class BuildGradle {
         if (lib.type == AritifactType.dylib) {
           File(lib.path).copySync(path.join(outputDir, lib.finalFileName));
         }
+      }
+
+      // Copy libc++_shared.so from NDK for C++ runtime support (required by oboe)
+      final ndkPath = path.join(Environment.sdkPath, 'ndk', Environment.ndkVersion);
+      final hostArch = _getHostArch();
+      final ndkTriple = _getNdkLibraryTriple(target);
+      final ndkToolchainPath = path.join(ndkPath, 'toolchains', 'llvm', 'prebuilt', hostArch);
+      final libcppPath = path.join(ndkToolchainPath, 'sysroot', 'usr', 'lib', ndkTriple, 'libc++_shared.so');
+      final libcppFile = File(libcppPath);
+      if (libcppFile.existsSync()) {
+        libcppFile.copySync(path.join(outputDir, 'libc++_shared.so'));
+        log.info('Copied libc++_shared.so for ${target.rust}');
+      } else {
+        log.warning('libc++_shared.so not found at $libcppPath');
       }
     }
   }

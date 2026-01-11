@@ -34,6 +34,7 @@ build/
 # Rust
 rust/target/
 rust/Cargo.lock
+rust/.cargo/
 
 # Cargokit build artifacts (the tool itself is vendored, but not its build outputs)
 rust_builder/cargokit/build_tool/.dart_tool/
@@ -69,6 +70,7 @@ web/
 **/android/key.properties
 **/android/*.iml
 **/android/generated/
+**/android/app/src/main/jniLibs/
 
 # macOS
 macos/Pods/

@@ -139,13 +139,19 @@ class RustBuilder {
   Future<String> build() async {
     final extraArgs = _buildOptions?.flags ?? [];
     final manifestPath = path.join(environment.manifestDir, 'Cargo.toml');
+    final isAndroidTarget = target.android != null;
+    
+    // For Android, use 'cargo rustc' with explicit --crate-type cdylib
+    // This overrides Cargo.toml which only has staticlib (for iOS compatibility)
+    final cargoCommand = isAndroidTarget ? 'rustc' : 'build';
+    
     runCommand(
       'rustup',
       [
         'run',
         _toolchain,
         'cargo',
-        'build',
+        cargoCommand,
         ...extraArgs,
         '--manifest-path',
         manifestPath,
@@ -156,6 +162,9 @@ class RustBuilder {
         target.rust,
         '--target-dir',
         environment.targetTempDir,
+        // For Android, specify cdylib crate type (iOS uses staticlib from Cargo.toml)
+        if (isAndroidTarget) '--crate-type',
+        if (isAndroidTarget) 'cdylib',
       ],
       environment: await _buildEnvironment(),
     );
