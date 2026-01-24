@@ -2,14 +2,12 @@
 //!
 //! Run with: cargo run --example aec_test
 //!
-//! This tool plays a 440Hz test tone through speakers while recording from the
-//! microphone with AEC enabled. If AEC is working correctly, the recording should
+//! This tool plays a 440Hz test tone through the AEC-enabled playback path while
+//! recording from the microphone. If AEC is working correctly, the recording should
 //! contain your voice but NOT the test tone.
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::f32::consts::PI;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use sys_voice::{AecConfig, CaptureHandle, Channels};
 
@@ -23,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("AEC Test Tool");
     println!("=============");
     println!();
-    println!("1. Playing 440Hz test tone through speakers");
+    println!("1. Playing 440Hz test tone through AEC playback path");
     println!(
         "2. Recording with AEC enabled for {} seconds",
         DURATION_SECS
@@ -45,38 +43,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handle = CaptureHandle::new(config)?;
     let mut recorded_samples: Vec<f32> = Vec::new();
 
-    let host = cpal::default_host();
-    let output_device = host
-        .default_output_device()
-        .ok_or("No output device available")?;
+    // Start streaming playback through the AEC-enabled path
+    let stream = handle.start_playback_stream(SAMPLE_RATE)?;
 
-    let output_config = output_device.default_output_config()?;
-    let output_sample_rate = output_config.sample_rate().0 as f32;
-    let output_channels = output_config.channels() as usize;
+    // Spawn thread to generate and send tone chunks
+    let playback_handle = std::thread::spawn(move || {
+        let chunk_size = 4800; // 100ms at 48kHz - larger chunks reduce timing sensitivity
+        let total_chunks = (DURATION_SECS as usize * SAMPLE_RATE as usize) / chunk_size;
+        let mut phase = 0.0f32;
+        let phase_increment = TONE_FREQ / SAMPLE_RATE as f32;
 
-    let phase_increment = TONE_FREQ / output_sample_rate;
-    let phase = Arc::new(Mutex::new(0.0f32));
-    let phase_clone = phase.clone();
-
-    let output_stream = output_device.build_output_stream(
-        &output_config.into(),
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let Ok(mut current_phase) = phase_clone.lock() else {
-                return;
-            };
-            for frame in data.chunks_mut(output_channels) {
-                let sample = (*current_phase * 2.0 * PI).sin() * TONE_VOLUME;
-                *current_phase = (*current_phase + phase_increment) % 1.0;
-                for channel_sample in frame.iter_mut() {
-                    *channel_sample = sample;
-                }
+        for _ in 0..total_chunks {
+            let mut chunk = Vec::with_capacity(chunk_size);
+            for _ in 0..chunk_size {
+                chunk.push((phase * 2.0 * PI).sin() * TONE_VOLUME);
+                phase = (phase + phase_increment) % 1.0;
             }
-        },
-        |err| eprintln!("Output stream error: {err:?}"),
-        None,
-    )?;
-
-    output_stream.play()?;
+            // Channel backpressure naturally throttles - no sleep needed
+            if stream.send(chunk).is_err() {
+                break;
+            }
+        }
+    });
 
     println!("Recording... speak now!");
     println!();
@@ -99,7 +87,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    drop(output_stream);
+    // Wait for playback thread to finish
+    let _ = playback_handle.join();
 
     println!("Recording complete!");
     println!();

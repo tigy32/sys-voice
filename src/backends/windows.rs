@@ -1,5 +1,4 @@
-use crate::backends::PlaybackRequest;
-use crate::resampler::Resampler;
+use crate::backends::PlaybackCommand;
 use crate::AecError;
 
 use wasapi::{
@@ -11,7 +10,7 @@ use wasapi::{
 /// Returns (sample_rate, buffer_size) queried from the actual device format.
 pub fn create_backend(
     sender: flume::Sender<Vec<f32>>,
-    playback_rx: flume::Receiver<PlaybackRequest>,
+    playback_rx: flume::Receiver<PlaybackCommand>,
 ) -> Result<(u32, usize), AecError> {
     // COM must be initialized for WASAPI
     let hr = initialize_mta();
@@ -165,7 +164,7 @@ fn capture_loop(
     Ok(())
 }
 
-fn playback_loop(playback_rx: flume::Receiver<PlaybackRequest>) -> Result<(), AecError> {
+fn playback_loop(playback_rx: flume::Receiver<PlaybackCommand>) -> Result<(), AecError> {
     // Re-initialize COM on this thread
     let hr = initialize_mta();
     if hr.0 != 0 {
@@ -215,38 +214,20 @@ fn playback_loop(playback_rx: flume::Receiver<PlaybackRequest>) -> Result<(), Ae
         .start_stream()
         .map_err(|e| AecError::BackendError(format!("start_stream: {e:?}")))?;
 
-    while let Ok(request) = playback_rx.recv() {
-        let samples = if request.sample_rate == native_rate {
-            request.samples
-        } else {
-            Resampler::new(request.sample_rate, native_rate)?.process(&request.samples)?
-        };
-
-        let samples = if native_channels > 1 {
-            samples
-                .iter()
-                .flat_map(|&s| std::iter::repeat(s).take(native_channels))
-                .collect()
-        } else {
-            samples
-        };
-
-        let frames_per_write = 480;
-        for chunk in samples.chunks(frames_per_write * native_channels) {
-            let _ = event_handle.wait_for_event(100);
-
-            let frames = chunk.len() / native_channels;
-
-            let mut bytes: Vec<u8> = Vec::with_capacity(chunk.len() * 4);
-            for sample in chunk {
-                bytes.extend_from_slice(&sample.to_le_bytes());
+    while let Ok(command) = playback_rx.recv() {
+        match command {
+            PlaybackCommand::OneShot(samples) => {
+                write_samples_to_device(&samples, native_channels, &render_client, &event_handle);
             }
-
-            if render_client
-                .write_to_device(frames, &bytes, None)
-                .is_err()
-            {
-                break;
+            PlaybackCommand::StartStream(chunk_rx) => {
+                while let Ok(samples) = chunk_rx.recv() {
+                    write_samples_to_device(
+                        &samples,
+                        native_channels,
+                        &render_client,
+                        &event_handle,
+                    );
+                }
             }
         }
     }
@@ -256,6 +237,38 @@ fn playback_loop(playback_rx: flume::Receiver<PlaybackRequest>) -> Result<(), Ae
         .map_err(|e| AecError::BackendError(format!("stop_stream: {e:?}")))?;
 
     Ok(())
+}
+
+fn write_samples_to_device(
+    samples: &[f32],
+    native_channels: usize,
+    render_client: &wasapi::AudioRenderClient,
+    event_handle: &wasapi::Handle,
+) {
+    let samples: Vec<f32> = if native_channels > 1 {
+        samples
+            .iter()
+            .flat_map(|&s| std::iter::repeat(s).take(native_channels))
+            .collect()
+    } else {
+        samples.to_vec()
+    };
+
+    let frames_per_write = 480;
+    for chunk in samples.chunks(frames_per_write * native_channels) {
+        let _ = event_handle.wait_for_event(100);
+
+        let frames = chunk.len() / native_channels;
+
+        let mut bytes: Vec<u8> = Vec::with_capacity(chunk.len() * 4);
+        for sample in chunk {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        if render_client.write_to_device(frames, &bytes, None).is_err() {
+            break;
+        }
+    }
 }
 
 fn convert_to_f32(data: &[u8], bits: u16, is_float: bool, channels: usize) -> Vec<f32> {

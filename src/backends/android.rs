@@ -6,7 +6,7 @@ use oboe::{
     InputPreset, Mono, Output, PerformanceMode, SampleRateConversionQuality, SharingMode, Usage,
 };
 
-use crate::backends::PlaybackRequest;
+use crate::backends::PlaybackCommand;
 use crate::AecError;
 
 struct InputHandler {
@@ -53,29 +53,6 @@ impl AudioOutputCallback for OutputHandler {
     }
 }
 
-fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate {
-        return input.to_vec();
-    }
-    let ratio = from_rate as f64 / to_rate as f64;
-    let output_len = (input.len() as f64 / ratio).ceil() as usize;
-    let mut output = Vec::with_capacity(output_len);
-    for i in 0..output_len {
-        let src_pos = i as f64 * ratio;
-        let src_idx = src_pos.floor() as usize;
-        let frac = (src_pos - src_idx as f64) as f32;
-        let sample = if src_idx + 1 < input.len() {
-            input[src_idx] * (1.0 - frac) + input[src_idx + 1] * frac
-        } else if src_idx < input.len() {
-            input[src_idx]
-        } else {
-            0.0
-        };
-        output.push(sample);
-    }
-    output
-}
-
 /// Create Android Oboe capture backend with hardware AEC.
 /// Spawns a dedicated OS thread that owns the audio stream lifecycle.
 /// Returns (sample_rate, buffer_size).
@@ -86,7 +63,7 @@ const STREAM_SAMPLE_RATE: i32 = 48000;
 /// Returns (sample_rate, buffer_size).
 pub fn create_backend(
     public_sender: flume::Sender<Vec<f32>>,
-    playback_rx: flume::Receiver<PlaybackRequest>,
+    playback_rx: flume::Receiver<PlaybackCommand>,
 ) -> Result<(u32, usize), AecError> {
     let playback_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::with_capacity(48000)));
     let playback_buffer_for_thread = playback_buffer.clone();
@@ -97,13 +74,7 @@ pub fn create_backend(
     std::thread::Builder::new()
         .name("android-playback".to_string())
         .spawn(move || {
-            let target_rate = STREAM_SAMPLE_RATE as u32;
-            while let Ok(request) = playback_rx.recv() {
-                let samples = resample_linear(&request.samples, request.sample_rate, target_rate);
-                if let Ok(mut buffer) = playback_buffer_for_thread.lock() {
-                    buffer.extend(samples);
-                }
-            }
+            run_playback_loop(playback_rx, playback_buffer_for_thread);
         })
         .map_err(|e| AecError::BackendError(format!("failed to spawn playback thread: {e:?}")))?;
 
@@ -192,4 +163,31 @@ pub fn create_backend(
     meta_rx.recv().map_err(|_| {
         AecError::BackendError("audio thread died before sending metadata".to_string())
     })?
+}
+
+fn run_playback_loop(
+    playback_rx: flume::Receiver<PlaybackCommand>,
+    playback_buffer: Arc<Mutex<Vec<f32>>>,
+) {
+    while let Ok(command) = playback_rx.recv() {
+        match command {
+            PlaybackCommand::OneShot(samples) => {
+                let Ok(mut buffer) = playback_buffer.lock() else {
+                    continue;
+                };
+                buffer.extend(samples);
+            }
+            PlaybackCommand::StartStream(chunk_rx) => {
+                let buf = playback_buffer.clone();
+                std::thread::spawn(move || {
+                    while let Ok(samples) = chunk_rx.recv() {
+                        let Ok(mut b) = buf.lock() else {
+                            break;
+                        };
+                        b.extend(samples);
+                    }
+                });
+            }
+        }
+    }
 }
