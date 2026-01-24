@@ -47,6 +47,29 @@ pub enum AecError {
     BackendError(String),
 }
 
+/// Handle for streaming audio chunks to the playback buffer.
+/// Drop the handle to signal end of stream.
+pub struct PlaybackStreamHandle {
+    chunk_tx: flume::Sender<Vec<f32>>,
+}
+
+impl PlaybackStreamHandle {
+    /// Send a chunk of audio samples to the playback buffer.
+    pub fn send(&self, chunk: Vec<f32>) -> Result<(), AecError> {
+        self.chunk_tx
+            .send(chunk)
+            .map_err(|_| AecError::BackendError("playback stream closed".to_string()))
+    }
+
+    /// Send a chunk of audio samples asynchronously.
+    pub async fn send_async(&self, chunk: Vec<f32>) -> Result<(), AecError> {
+        self.chunk_tx
+            .send_async(chunk)
+            .await
+            .map_err(|_| AecError::BackendError("playback stream closed".to_string()))
+    }
+}
+
 /// Handle for receiving AEC-processed audio samples.
 /// Capture stops automatically when dropped (channel disconnect stops backend).
 pub struct CaptureHandle {
@@ -137,6 +160,17 @@ impl CaptureHandle {
     /// Audio is played at the specified sample rate.
     pub fn play_audio(&self, samples: Vec<f32>, sample_rate: u32) -> Result<(), AecError> {
         self.backend.play_audio(samples, sample_rate)
+    }
+
+    /// Start a streaming playback session.
+    /// Returns a handle for sending audio chunks incrementally.
+    /// The stream ends when the handle is dropped.
+    pub fn start_playback_stream(
+        &self,
+        sample_rate: u32,
+    ) -> Result<PlaybackStreamHandle, AecError> {
+        let chunk_tx = self.backend.start_playback_stream(sample_rate)?;
+        Ok(PlaybackStreamHandle { chunk_tx })
     }
 }
 

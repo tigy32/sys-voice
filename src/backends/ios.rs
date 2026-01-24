@@ -1,4 +1,4 @@
-use crate::backends::PlaybackRequest;
+use crate::backends::PlaybackCommand;
 use crate::AecError;
 use flume::{Receiver, Sender};
 use objc2::rc::Retained;
@@ -179,7 +179,6 @@ const MAX_FRAMES_PER_CALLBACK: usize = 4096;
 struct VPIOContext {
     audio_unit: AudioComponentInstance,
     capture_sender: Sender<Vec<f32>>,
-    playback_receiver: Arc<Mutex<Receiver<PlaybackRequest>>>,
     playback_buffer: Arc<Mutex<Vec<f32>>>,
     // Pre-allocated scratch buffer to avoid heap allocation in callback
     input_scratch: std::sync::Mutex<Vec<f32>>,
@@ -198,7 +197,7 @@ unsafe impl Sync for VPIOContext {}
 /// Returns (sample_rate, buffer_size).
 pub fn create_backend(
     public_sender: Sender<Vec<f32>>,
-    playback_rx: Receiver<PlaybackRequest>,
+    playback_rx: Receiver<PlaybackCommand>,
 ) -> Result<(u32, usize), AecError> {
     // Configure audio session first (on main thread context is fine)
     configure_audio_session()?;
@@ -233,7 +232,6 @@ pub fn create_backend(
     let context = Box::new(VPIOContext {
         audio_unit,
         capture_sender: public_sender,
-        playback_receiver: Arc::new(Mutex::new(playback_rx)),
         playback_buffer: Arc::new(Mutex::new(Vec::new())),
         input_scratch: std::sync::Mutex::new(vec![0.0f32; MAX_FRAMES_PER_CALLBACK]),
         sample_rate: SAMPLE_RATE,
@@ -274,19 +272,11 @@ pub fn create_backend(
 
     // Spawn thread to handle playback requests
     let playback_buffer = unsafe { (*context_ptr).playback_buffer.clone() };
-    let playback_receiver = unsafe { (*context_ptr).playback_receiver.clone() };
 
     std::thread::Builder::new()
         .name("ios-playback".to_string())
         .spawn(move || {
-            let rx = playback_receiver.lock().unwrap();
-            while let Ok(request) = rx.recv() {
-                // Resample if needed and add to playback buffer
-                let resampled =
-                    resample_linear(&request.samples, request.sample_rate as f64, SAMPLE_RATE);
-                let mut buffer = playback_buffer.lock().unwrap();
-                buffer.extend(resampled);
-            }
+            run_playback_loop(playback_rx, playback_buffer);
         })
         .map_err(|e| AecError::BackendError(format!("Failed to spawn playback thread: {e}")))?;
 
@@ -725,28 +715,29 @@ fn extract_nserror_message(error: *mut NSError) -> String {
     }
 }
 
-/// Simple linear interpolation resampler
-fn resample_linear(samples: &[f32], src_rate: f64, dst_rate: f64) -> Vec<f32> {
-    if (src_rate - dst_rate).abs() < 1.0 {
-        return samples.to_vec();
-    }
-
-    let ratio = src_rate / dst_rate;
-    let out_len = ((samples.len() as f64) / ratio).ceil() as usize;
-    let mut output = Vec::with_capacity(out_len);
-
-    for i in 0..out_len {
-        let src_idx = i as f64 * ratio;
-        let idx0 = src_idx.floor() as usize;
-        let idx1 = (idx0 + 1).min(samples.len().saturating_sub(1));
-        let frac = (src_idx - idx0 as f64) as f32;
-
-        if idx0 < samples.len() {
-            let sample =
-                samples[idx0] * (1.0 - frac) + samples.get(idx1).copied().unwrap_or(0.0) * frac;
-            output.push(sample);
+fn run_playback_loop(
+    playback_rx: Receiver<PlaybackCommand>,
+    playback_buffer: Arc<Mutex<Vec<f32>>>,
+) {
+    while let Ok(command) = playback_rx.recv() {
+        match command {
+            PlaybackCommand::OneShot(samples) => {
+                let Ok(mut buffer) = playback_buffer.lock() else {
+                    continue;
+                };
+                buffer.extend(samples);
+            }
+            PlaybackCommand::StartStream(chunk_rx) => {
+                let buf = playback_buffer.clone();
+                std::thread::spawn(move || {
+                    while let Ok(samples) = chunk_rx.recv() {
+                        let Ok(mut b) = buf.lock() else {
+                            break;
+                        };
+                        b.extend(samples);
+                    }
+                });
+            }
         }
     }
-
-    output
 }

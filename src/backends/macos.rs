@@ -1,5 +1,4 @@
-use crate::backends::PlaybackRequest;
-use crate::resampler::Resampler;
+use crate::backends::PlaybackCommand;
 use crate::AecError;
 use coreaudio::audio_unit::render_callback::{self, data};
 use coreaudio::audio_unit::types::IOType;
@@ -18,7 +17,7 @@ struct PlaybackBuffer {
 /// Returns (sample_rate, buffer_size). Task stops when sender fails.
 pub fn create_backend(
     public_sender: Sender<Vec<f32>>,
-    playback_rx: Receiver<PlaybackRequest>,
+    playback_rx: Receiver<PlaybackCommand>,
 ) -> Result<(u32, usize), AecError> {
     let (callback_tx, callback_rx) = flume::bounded::<Vec<f32>>(32);
 
@@ -133,21 +132,25 @@ pub fn create_backend(
 
     let buffer_for_playback = playback_buffer.clone();
     tokio::spawn(async move {
-        while let Ok(request) = playback_rx.recv_async().await {
-            let samples = if request.sample_rate == native_rate {
-                request.samples
-            } else {
-                let Ok(mut r) = Resampler::new(request.sample_rate, native_rate) else {
-                    return;
-                };
-                let Ok(s) = r.process(&request.samples) else {
-                    return;
-                };
-                s
-            };
-
-            if let Ok(mut buffer) = buffer_for_playback.lock() {
-                buffer.samples.extend(samples);
+        while let Ok(command) = playback_rx.recv_async().await {
+            match command {
+                PlaybackCommand::OneShot(samples) => {
+                    let Ok(mut buf) = buffer_for_playback.lock() else {
+                        continue;
+                    };
+                    buf.samples.extend(samples);
+                }
+                PlaybackCommand::StartStream(chunk_rx) => {
+                    let buf = buffer_for_playback.clone();
+                    tokio::spawn(async move {
+                        while let Ok(samples) = chunk_rx.recv_async().await {
+                            let Ok(mut b) = buf.lock() else {
+                                break;
+                            };
+                            b.samples.extend(samples);
+                        }
+                    });
+                }
             }
         }
     });
